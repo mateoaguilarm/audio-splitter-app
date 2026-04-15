@@ -6,16 +6,15 @@
 [build.environment]
   NODE_VERSION = "18"
 
-# Redirect all routes to index.html for SPA routing
+# Proxy /api/* to the Render backend — no CORS config needed on the frontend
+[[redirects]]
+  from   = "/api/*"
+  to     = "https://audio-splitter-app.onrender.com/api/:splat"
+  status = 200
+  force  = true
+
+# SPA fallback — must come AFTER the /api proxy
 [[redirects]]
   from   = "/*"
   to     = "/index.html"
   status = 200
-
-# Backend API is a separate service — proxy requests in production
-# Uncomment and set VITE_API_URL in Netlify env vars to your backend URL
-# [[redirects]]
-#   from   = "/api/*"
-#   to     = "https://your-backend.railway.app/api/:splat"
-#   status = 200
-#   force  = true
