@@ -94,11 +94,11 @@ export default function App() {
     setSegmentMinutes(mins);
 
     setProgressMsg(trimSilence
-      ? 'Recortando silencio inicial y dividiendo el audio…'
+      ? 'Detectando silencio inicial y dividiendo el audio…'
       : 'Dividiendo el audio con FFmpeg…');
     setProgressHint(trimSilence
-      ? 'Este proceso re-codifica el audio — puede tardar varios minutos.'
-      : 'Para archivos grandes el proceso puede tardar unos minutos.');
+      ? 'Primero escanea el inicio (~20s) y luego corta. No re-codifica el audio.'
+      : 'Para archivos grandes puede tardar hasta un minuto.');
 
     const formData = new FormData();
     formData.append('audio', file);
