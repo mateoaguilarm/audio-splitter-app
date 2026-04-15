@@ -114,40 +114,9 @@ export default function Controls({
         )}
       </div>
 
-      {/* ── Trim silence checkbox ──────────────────────────────────── */}
-      <label className={`flex items-start gap-3 cursor-pointer rounded-xl border p-3 transition-colors
-        ${trimSilence ? 'border-brand/40 bg-brand/[0.08]' : 'border-white/10 bg-white/5 hover:bg-white/[0.08]'}
-        ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
-      >
-        <div className="relative shrink-0 mt-0.5">
-          <input
-            type="checkbox"
-            checked={trimSilence}
-            onChange={(e) => onTrimSilenceChange(e.target.checked)}
-            disabled={loading}
-            className="sr-only"
-          />
-          <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all
-            ${trimSilence ? 'border-brand bg-brand' : 'border-white/30'}`}
-          >
-            {trimSilence && (
-              <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
-                <path d="M2 6l3 3 5-5" stroke="white" strokeWidth="1.8"
-                  strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            )}
-          </div>
-        </div>
-        <div>
-          <p className="text-sm font-medium text-white leading-snug">
-            Recortar silencio inicial
-          </p>
-          <p className="text-xs text-white/45 mt-0.5 leading-relaxed">
-            Elimina el silencio al inicio de la grabación.
-            Tarda un poco más y la calidad puede variar levemente.
-          </p>
-        </div>
-      </label>
+      {/* ── Trim silence — hidden in v1 (needs persistent job store for Render restarts)
+      <label>…</label>
+      ── */}
 
       {/* ── Split button ───────────────────────────────────────────── */}
       <button
