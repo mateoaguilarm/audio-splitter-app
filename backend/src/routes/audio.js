@@ -3,6 +3,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { splitAudio, cleanupFiles, scheduleCleanup } = require('../utils/audioProcessor');
+const { createJob, updateJob, getJob } = require('../utils/jobs');
 
 const router = express.Router();
 
@@ -14,7 +15,6 @@ const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || '500', 10);
 const ALLOWED_MIMETYPES = ['audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/m4a', 'audio/ogg', 'audio/x-m4a'];
 const ALLOWED_EXTENSIONS = ['.mp3', '.wav', '.m4a', '.ogg'];
 
-// Ensure upload directory exists
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
@@ -30,7 +30,7 @@ function fileFilter(_req, file, cb) {
   if (ALLOWED_EXTENSIONS.includes(ext) || ALLOWED_MIMETYPES.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error(`Unsupported file type: ${file.mimetype}. Allowed: MP3, WAV, M4A, OGG`));
+    cb(new Error(`Formato no soportado: ${file.mimetype}. Usa MP3, WAV, M4A u OGG.`));
   }
 }
 
@@ -41,84 +41,107 @@ const upload = multer({
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/split
+// Background processor — runs after the HTTP response is already sent
+// ---------------------------------------------------------------------------
+async function processAudioInBackground(jobId, inputPath, outputDir, safeName, segmentDurationSeconds, trimSilence) {
+  try {
+    console.log(`[job:${jobId}] Starting — trimSilence=${trimSilence} segmentDuration=${segmentDurationSeconds}s`);
+
+    const segmentPaths = await splitAudio(
+      inputPath, segmentDurationSeconds, outputDir, safeName, trimSilence
+    );
+
+    const segments = segmentPaths.map((p, idx) => ({
+      index: idx + 1,
+      filename: path.basename(p),
+      // Relative path — frontend prepends its own origin (Netlify proxy handles it)
+      downloadPath: `/api/download/${jobId}/${path.basename(p)}`,
+      size: fs.statSync(p).size,
+    }));
+
+    cleanupFiles([inputPath]);
+    scheduleCleanup(outputDir, 60 * 60 * 1000);
+
+    updateJob(jobId, { status: 'done', segments });
+    console.log(`[job:${jobId}] Done — ${segments.length} segments`);
+  } catch (err) {
+    console.error(`[job:${jobId}] Error:`, err.message);
+    cleanupFiles([inputPath]);
+    try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch (_) {}
+    updateJob(jobId, { status: 'error', error: err.message || 'Error al procesar el audio.' });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/split  — receives file, validates, starts background job, returns immediately
 // ---------------------------------------------------------------------------
 router.post('/split', (req, res, next) => {
-  // Wrap multer so its errors surface as 400 (not 500)
   upload.single('audio')(req, res, (err) => {
     if (err) {
       const msg = err.code === 'LIMIT_FILE_SIZE'
-        ? `File too large. Maximum is ${MAX_FILE_SIZE_MB} MB.`
-        : err.message || 'File upload failed.';
+        ? `Archivo muy grande. Máximo: ${MAX_FILE_SIZE_MB} MB.`
+        : err.message || 'Error al subir el archivo.';
       return res.status(400).json({ error: msg });
     }
     next();
   });
-}, async (req, res) => {
+}, (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ error: 'No audio file provided.' });
+    return res.status(400).json({ error: 'No se recibió ningún archivo de audio.' });
   }
 
-  const { segmentDuration } = req.body; // in minutes
-  const durationMinutes = parseFloat(segmentDuration);
-
+  const durationMinutes = parseFloat(req.body.segmentDuration);
   if (isNaN(durationMinutes) || durationMinutes < 1 || durationMinutes > 120) {
     cleanupFiles([req.file.path]);
-    return res.status(400).json({ error: 'segmentDuration must be a number between 1 and 120 (minutes).' });
+    return res.status(400).json({ error: 'La duración del segmento debe estar entre 1 y 120 minutos.' });
   }
 
   const segmentDurationSeconds = Math.round(durationMinutes * 60);
   const inputPath = req.file.path;
+  const trimSilence = req.body.trimSilence === 'true';
 
-  // Derive a safe base name from the original file name (e.g. "My Audio" → "My_Audio")
+  // Safe base name from original filename
   const rawName = path.basename(req.file.originalname, path.extname(req.file.originalname));
   const safeName = rawName
     .replace(/[^a-zA-Z0-9_\-]/g, '_')
     .replace(/_{2,}/g, '_')
     .replace(/^_+|_+$/g, '') || 'audio';
 
-  // Use a per-job subdirectory so segments from different jobs don't mix
+  // jobId doubles as the output subdirectory name
   const jobId = path.basename(inputPath, path.extname(inputPath));
   const outputDir = path.join(UPLOAD_DIR, jobId);
   fs.mkdirSync(outputDir, { recursive: true });
 
-  // trimSilence comes as the string "true" from FormData
-  const trimSilence = req.body.trimSilence === 'true';
+  // Register job BEFORE responding so the client can poll immediately
+  createJob(jobId);
 
-  try {
-    console.log(
-      `[split] job=${jobId} file=${req.file.originalname} baseName=${safeName} ` +
-      `segmentDuration=${durationMinutes}min trimSilence=${trimSilence}`
-    );
+  // Respond immediately — processing happens in the background
+  res.json({ jobId });
 
-    const segmentPaths = await splitAudio(inputPath, segmentDurationSeconds, outputDir, safeName, trimSilence);
+  // Fire-and-forget (intentionally not awaited)
+  processAudioInBackground(jobId, inputPath, outputDir, safeName, segmentDurationSeconds, trimSilence);
+});
 
-    // Return relative paths — the frontend prepends its own origin so all
-    // requests flow through the Netlify proxy instead of hitting Render directly.
-    const segments = segmentPaths.map((p, idx) => ({
-      index: idx + 1,
-      filename: path.basename(p),
-      downloadPath: `/api/download/${jobId}/${path.basename(p)}`,
-      size: fs.statSync(p).size,
-    }));
+// ---------------------------------------------------------------------------
+// GET /api/status/:jobId  — polling endpoint
+// ---------------------------------------------------------------------------
+router.get('/status/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  if (jobId.includes('..')) return res.status(400).json({ error: 'ID inválido.' });
 
-    // Clean up the original upload, schedule output cleanup in 1 hour
-    cleanupFiles([inputPath]);
-    scheduleCleanup(outputDir, 60 * 60 * 1000);
-
-    return res.json({
-      success: true,
-      jobId,
-      totalSegments: segments.length,
-      segments,
+  const job = getJob(jobId);
+  if (!job) {
+    return res.status(404).json({
+      error: 'Job no encontrado. El servidor puede haberse reiniciado. Intenta de nuevo.',
     });
-  } catch (err) {
-    console.error('[split] Error:', err.message);
-    cleanupFiles([inputPath]);
-    // Best-effort cleanup of output dir
-    try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch (_) {}
-    return res.status(500).json({ error: err.message || 'Audio processing failed.' });
   }
+
+  // Only expose what the client needs
+  res.json({
+    status: job.status,           // 'processing' | 'done' | 'error'
+    segments: job.segments,       // null while processing
+    error: job.error,             // null unless errored
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -127,21 +150,20 @@ router.post('/split', (req, res, next) => {
 router.get('/download/:jobId/:filename', (req, res) => {
   const { jobId, filename } = req.params;
 
-  // Prevent path traversal
   if (jobId.includes('..') || filename.includes('..')) {
-    return res.status(400).json({ error: 'Invalid path.' });
+    return res.status(400).json({ error: 'Ruta inválida.' });
   }
 
   const filePath = path.join(UPLOAD_DIR, jobId, filename);
 
   if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'File not found. It may have expired.' });
+    return res.status(404).json({ error: 'Archivo no encontrado. Puede haber expirado (1 hora).' });
   }
 
   res.download(filePath, filename, (err) => {
     if (err) {
-      console.error('[download] Error sending file:', err.message);
-      if (!res.headersSent) res.status(500).json({ error: 'Failed to send file.' });
+      console.error('[download] Error:', err.message);
+      if (!res.headersSent) res.status(500).json({ error: 'Error al enviar el archivo.' });
     }
   });
 });

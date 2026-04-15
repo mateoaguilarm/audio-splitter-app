@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import Upload, { formatDuration } from './components/Upload';
 import Controls from './components/Controls';
@@ -6,21 +6,79 @@ import Preview from './components/Preview';
 import Progress from './components/Progress';
 import Results from './components/Results';
 
-// File uploads go directly to the Render backend, bypassing the Netlify proxy.
-// Netlify's reverse proxy rejects multipart bodies over ~6 MB, so large audio
-// files would fail with 400 if routed through netlify.toml redirects.
-// CORS on the backend already accepts *.netlify.app so this works cross-origin.
-// Override with VITE_API_URL env var if the backend URL ever changes.
+// Uploads go directly to Render (Netlify proxy can't handle large multipart bodies).
+// CORS on the backend accepts *.netlify.app so this works cross-origin.
 const UPLOAD_URL = import.meta.env.VITE_API_URL || 'https://audio-splitter-app.onrender.com';
+
+const POLL_INTERVAL_MS  = 3000;   // check status every 3 s
+const POLL_TIMEOUT_MS   = 10 * 60 * 1000; // give up after 10 min
 
 export default function App() {
   const [file, setFile] = useState(null);
-  const [duration, setDuration] = useState(null); // seconds
-  const [segmentMinutes, setSegmentMinutes] = useState(5);
+  const [duration, setDuration] = useState(null);       // seconds
+  const [segmentMinutes, setSegmentMinutes] = useState(29);
   const [trimSilence, setTrimSilence] = useState(false);
+
   const [loading, setLoading] = useState(false);
+  const [progressMsg, setProgressMsg] = useState('');
+  const [progressHint, setProgressHint] = useState('');
   const [error, setError] = useState('');
-  const [segments, setSegments] = useState(null); // null = not done yet
+  const [segments, setSegments] = useState(null);
+
+  // Polling refs — kept outside state to avoid re-render side effects
+  const pollRef    = useRef(null);
+  const timeoutRef = useRef(null);
+
+  // Clean up polling on unmount
+  useEffect(() => () => {
+    clearInterval(pollRef.current);
+    clearTimeout(timeoutRef.current);
+  }, []);
+
+  const stopPolling = () => {
+    clearInterval(pollRef.current);
+    clearTimeout(timeoutRef.current);
+    pollRef.current    = null;
+    timeoutRef.current = null;
+  };
+
+  const startPolling = (jobId) => {
+    // Safety timeout — stop after POLL_TIMEOUT_MS regardless
+    timeoutRef.current = setTimeout(() => {
+      stopPolling();
+      setLoading(false);
+      setError('El proceso tardó demasiado tiempo. Intenta con un archivo más pequeño o segmentos más largos.');
+    }, POLL_TIMEOUT_MS);
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const { data } = await axios.get(`${UPLOAD_URL}/api/status/${jobId}`, { timeout: 10_000 });
+
+        if (data.status === 'done') {
+          stopPolling();
+          setSegments(data.segments);
+          setLoading(false);
+
+        } else if (data.status === 'error') {
+          stopPolling();
+          setError(data.error || 'Error al procesar el audio.');
+          setLoading(false);
+
+        }
+        // 'processing' → keep polling, do nothing
+      } catch (err) {
+        stopPolling();
+        setLoading(false);
+        if (err.response?.status === 404) {
+          setError('El servidor se reinició durante el proceso. Intenta de nuevo.');
+        } else {
+          setError('No se pudo verificar el estado del proceso. Revisa tu conexión e intenta de nuevo.');
+        }
+      }
+    }, POLL_INTERVAL_MS);
+  };
+
+  // ── Handlers ──────────────────────────────────────────────────────────────
 
   const handleFileSelected = (f, dur) => {
     setFile(f);
@@ -35,37 +93,51 @@ export default function App() {
     setError('');
     setSegmentMinutes(mins);
 
+    setProgressMsg(trimSilence
+      ? 'Recortando silencio inicial y dividiendo el audio…'
+      : 'Dividiendo el audio con FFmpeg…');
+    setProgressHint(trimSilence
+      ? 'Este proceso re-codifica el audio — puede tardar varios minutos.'
+      : 'Para archivos grandes el proceso puede tardar unos minutos.');
+
     const formData = new FormData();
     formData.append('audio', file);
     formData.append('segmentDuration', String(mins));
     formData.append('trimSilence', String(trimSilence));
 
     try {
-      // Do NOT set Content-Type manually — Axios must auto-set it with the
-      // multipart boundary; overriding it breaks multer's body parsing.
+      // Upload goes directly to Render — DO NOT set Content-Type manually
       const { data } = await axios.post(`${UPLOAD_URL}/api/split`, formData, {
-        timeout: 10 * 60 * 1000, // 10 min
+        timeout: 5 * 60 * 1000,  // 5 min for the upload itself
       });
-      setSegments(data.segments);
+
+      // Backend responds immediately with jobId; processing continues in background
+      startPolling(data.jobId);
+
     } catch (err) {
-      const msg =
-        err.response?.data?.error ||
-        (err.code === 'ECONNABORTED' ? 'Request timed out. The file may be too large.' : err.message);
-      setError(msg);
-    } finally {
       setLoading(false);
+      const msg = err.response?.data?.error
+        || (err.code === 'ECONNABORTED'
+          ? 'La subida del archivo tardó demasiado. Verifica tu conexión.'
+          : err.message);
+      setError(msg);
     }
   };
 
   const handleReset = () => {
+    stopPolling();
     setFile(null);
     setDuration(null);
     setSegments(null);
     setError('');
+    setLoading(false);
   };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="min-h-screen bg-surface flex flex-col">
+
       {/* Header */}
       <header className="w-full border-b border-white/10 py-4 px-6">
         <div className="max-w-3xl mx-auto flex items-center gap-3">
@@ -77,7 +149,7 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-lg font-bold text-white leading-none">Audio Splitter</h1>
-            <p className="text-xs text-white/40">Split MP3, WAV, M4A &amp; OGG files</p>
+            <p className="text-xs text-white/40">MP3 · WAV · M4A · OGG</p>
           </div>
         </div>
       </header>
@@ -89,11 +161,10 @@ export default function App() {
           {/* Step 1 — Upload */}
           <section className="card">
             <h2 className="text-sm font-semibold text-white/50 uppercase tracking-widest mb-4">
-              1 &mdash; Select File
+              1 &mdash; Selecciona el archivo
             </h2>
 
             {segments ? (
-              /* Show selected file info once done */
               <div className="flex items-center gap-3 text-sm text-white/70">
                 <svg className="w-5 h-5 text-brand shrink-0" viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -105,7 +176,6 @@ export default function App() {
               <Upload onFileSelected={handleFileSelected} disabled={loading} />
             )}
 
-            {/* File metadata chip */}
             {file && !segments && (
               <div className="mt-3 flex flex-wrap gap-2">
                 <span className="bg-white/10 text-white/70 text-xs rounded-full px-3 py-1">
@@ -125,19 +195,17 @@ export default function App() {
             <section className="card flex flex-col gap-6">
               <div>
                 <h2 className="text-sm font-semibold text-white/50 uppercase tracking-widest mb-4">
-                  2 &mdash; Configure Split
+                  2 &mdash; Configura la división
                 </h2>
+
                 {loading ? (
-                  <Progress message={
-                    trimSilence
-                      ? 'Recortando silencio inicial y dividiendo el audio…'
-                      : 'Dividiendo el audio con FFmpeg…'
-                  } />
+                  <Progress message={progressMsg} hint={progressHint} />
                 ) : (
                   <Controls
                     file={file}
                     duration={duration}
                     onSplit={handleSplit}
+                    onPreviewChange={setSegmentMinutes}
                     loading={loading}
                     trimSilence={trimSilence}
                     onTrimSilenceChange={setTrimSilence}
@@ -145,7 +213,7 @@ export default function App() {
                 )}
               </div>
 
-              {/* Live timeline preview */}
+              {/* Live timeline preview — updates as slider moves */}
               {!loading && duration && (
                 <>
                   <Preview duration={duration} segmentMinutes={segmentMinutes} />
@@ -168,7 +236,17 @@ export default function App() {
               <svg className="w-5 h-5 shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
                 <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
               </svg>
-              {error}
+              <div>
+                <p>{error}</p>
+                {!loading && (
+                  <button
+                    onClick={() => setError('')}
+                    className="mt-2 text-xs text-red-400/70 underline hover:text-red-400"
+                  >
+                    Cerrar
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -176,7 +254,7 @@ export default function App() {
           {segments && (
             <section className="card">
               <h2 className="text-sm font-semibold text-white/50 uppercase tracking-widest mb-4">
-                3 &mdash; Download Segments
+                3 &mdash; Descarga los segmentos
               </h2>
               <Results segments={segments} onReset={handleReset} />
             </section>
@@ -184,9 +262,8 @@ export default function App() {
         </div>
       </main>
 
-      {/* Footer */}
       <footer className="w-full border-t border-white/10 py-3 px-6 text-center text-xs text-white/25">
-        Audio Splitter &mdash; files are deleted from the server after 1 hour
+        Audio Splitter &mdash; los archivos se eliminan del servidor después de 1 hora
       </footer>
     </div>
   );

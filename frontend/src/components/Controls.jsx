@@ -1,5 +1,13 @@
 import { useState } from 'react';
 
+// Quick-select presets. The starred one is highlighted as "your default".
+const PRESETS = [
+  { label: '15 min', value: 15 },
+  { label: '29 min', value: 29, starred: true },
+  { label: '30 min', value: 30 },
+  { label: '60 min', value: 60 },
+];
+
 /**
  * Controls — segment duration input + trim silence checkbox + split button.
  *
@@ -7,19 +15,29 @@ import { useState } from 'react';
  *   file                 - File object (null if none selected)
  *   duration             - Total audio duration in seconds (may be null)
  *   onSplit(mins)        - Called when user clicks Split
+ *   onPreviewChange(mins)- Called on every valid duration change (live timeline)
  *   loading              - Whether a split is in progress
- *   trimSilence          - Controlled value from parent
+ *   trimSilence          - Controlled from parent
  *   onTrimSilenceChange  - Setter from parent
  */
-export default function Controls({ file, duration, onSplit, loading, trimSilence, onTrimSilenceChange }) {
-  const [minutes, setMinutes] = useState('5');
+export default function Controls({
+  file, duration, onSplit, onPreviewChange,
+  loading, trimSilence, onTrimSilenceChange,
+}) {
+  const [minutes, setMinutes] = useState('29');
 
   const mins = parseFloat(minutes);
   const isValid = !isNaN(mins) && mins >= 1 && mins <= 120;
 
-  // Preview how many segments would be created
   const segmentCount =
     duration && isValid ? Math.ceil(duration / (mins * 60)) : null;
+
+  // Update both local display and parent preview
+  const applyMinutes = (val) => {
+    setMinutes(String(val));
+    const m = parseFloat(val);
+    if (!isNaN(m) && m >= 1 && m <= 120) onPreviewChange?.(m);
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -29,11 +47,38 @@ export default function Controls({ file, duration, onSplit, loading, trimSilence
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-5">
 
-      {/* ── Segment duration ────────────────────────────────────────── */}
+      {/* ── Segment duration ───────────────────────────────────────── */}
       <div>
-        <label className="block text-sm font-medium text-white/70 mb-1.5">
+        <label className="block text-sm font-medium text-white/70 mb-2">
           Duración de cada segmento (minutos)
         </label>
+
+        {/* Preset chips */}
+        <div className="flex flex-wrap gap-2 mb-3">
+          {PRESETS.map((p) => {
+            const active = parseFloat(minutes) === p.value;
+            return (
+              <button
+                key={p.value}
+                type="button"
+                disabled={loading}
+                onClick={() => applyMinutes(p.value)}
+                className={`relative px-3 py-1 rounded-lg text-sm font-medium transition-all border
+                  ${active
+                    ? 'bg-brand text-white border-brand shadow-sm shadow-brand/30'
+                    : 'bg-white/5 text-white/60 border-white/10 hover:border-brand/50 hover:text-white'}
+                  disabled:opacity-50`}
+              >
+                {p.label}
+                {p.starred && !active && (
+                  <span className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-brand rounded-full border-2 border-surface" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Numeric input + slider */}
         <div className="flex items-center gap-3">
           <input
             type="number"
@@ -41,9 +86,9 @@ export default function Controls({ file, duration, onSplit, loading, trimSilence
             max="120"
             step="0.5"
             value={minutes}
-            onChange={(e) => setMinutes(e.target.value)}
+            onChange={(e) => applyMinutes(e.target.value)}
             disabled={loading}
-            className="w-28 bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white text-center text-lg font-semibold focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand disabled:opacity-50 transition"
+            className="w-24 bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white text-center text-lg font-semibold focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand disabled:opacity-50 transition"
           />
           <input
             type="range"
@@ -51,7 +96,7 @@ export default function Controls({ file, duration, onSplit, loading, trimSilence
             max="60"
             step="1"
             value={Math.min(parseFloat(minutes) || 1, 60)}
-            onChange={(e) => setMinutes(e.target.value)}
+            onChange={(e) => applyMinutes(e.target.value)}
             disabled={loading}
             className="flex-1 accent-brand disabled:opacity-50"
           />
@@ -64,20 +109,16 @@ export default function Controls({ file, duration, onSplit, loading, trimSilence
             segmento{segmentCount !== 1 ? 's' : ''}.
           </p>
         )}
-
         {!isValid && minutes !== '' && (
           <p className="mt-1 text-xs text-red-400">Ingresa un valor entre 1 y 120.</p>
         )}
       </div>
 
-      {/* ── Trim silence checkbox ────────────────────────────────────── */}
+      {/* ── Trim silence checkbox ──────────────────────────────────── */}
       <label className={`flex items-start gap-3 cursor-pointer rounded-xl border p-3 transition-colors
-        ${trimSilence
-          ? 'border-brand/40 bg-brand/8'
-          : 'border-white/10 bg-white/5 hover:bg-white/8'}
+        ${trimSilence ? 'border-brand/40 bg-brand/[0.08]' : 'border-white/10 bg-white/5 hover:bg-white/[0.08]'}
         ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
       >
-        {/* Custom checkbox */}
         <div className="relative shrink-0 mt-0.5">
           <input
             type="checkbox"
@@ -87,7 +128,7 @@ export default function Controls({ file, duration, onSplit, loading, trimSilence
             className="sr-only"
           />
           <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all
-            ${trimSilence ? 'border-brand bg-brand' : 'border-white/30 bg-transparent'}`}
+            ${trimSilence ? 'border-brand bg-brand' : 'border-white/30'}`}
           >
             {trimSilence && (
               <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
@@ -97,20 +138,18 @@ export default function Controls({ file, duration, onSplit, loading, trimSilence
             )}
           </div>
         </div>
-
-        {/* Label text */}
         <div>
           <p className="text-sm font-medium text-white leading-snug">
             Recortar silencio inicial
           </p>
           <p className="text-xs text-white/45 mt-0.5 leading-relaxed">
-            Elimina los segundos o minutos de silencio al inicio de la grabación.
-            El proceso tarda un poco más y la calidad puede variar levemente.
+            Elimina el silencio al inicio de la grabación.
+            Tarda un poco más y la calidad puede variar levemente.
           </p>
         </div>
       </label>
 
-      {/* ── Split button ─────────────────────────────────────────────── */}
+      {/* ── Split button ───────────────────────────────────────────── */}
       <button
         type="submit"
         disabled={!file || !isValid || loading}
@@ -122,7 +161,7 @@ export default function Controls({ file, duration, onSplit, loading, trimSilence
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
             </svg>
-            {trimSilence ? 'Procesando (modo silencio)…' : 'Procesando…'}
+            Procesando…
           </>
         ) : (
           <>
