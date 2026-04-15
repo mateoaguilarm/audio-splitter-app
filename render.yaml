@@ -11,7 +11,7 @@ services:
       - key: PORT
         value: 10000
       - key: FRONTEND_URL
-        sync: false          # set this manually in Render dashboard → your Netlify URL
+        value: https://audio-splitter-app.netlify.app
       - key: MAX_FILE_SIZE_MB
         value: 500
       - key: UPLOAD_DIR
