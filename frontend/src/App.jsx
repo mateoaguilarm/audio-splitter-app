@@ -34,8 +34,9 @@ export default function App() {
     formData.append('segmentDuration', String(mins));
 
     try {
+      // Do NOT set Content-Type manually — Axios must auto-set it with the
+      // multipart boundary; overriding it breaks multer's body parsing.
       const { data } = await axios.post(`${API_URL}/api/split`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 10 * 60 * 1000, // 10 min
       });
       setSegments(data.segments);

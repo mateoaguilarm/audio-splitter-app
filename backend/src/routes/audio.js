@@ -43,7 +43,18 @@ const upload = multer({
 // ---------------------------------------------------------------------------
 // POST /api/split
 // ---------------------------------------------------------------------------
-router.post('/split', upload.single('audio'), async (req, res) => {
+router.post('/split', (req, res, next) => {
+  // Wrap multer so its errors surface as 400 (not 500)
+  upload.single('audio')(req, res, (err) => {
+    if (err) {
+      const msg = err.code === 'LIMIT_FILE_SIZE'
+        ? `File too large. Maximum is ${MAX_FILE_SIZE_MB} MB.`
+        : err.message || 'File upload failed.';
+      return res.status(400).json({ error: msg });
+    }
+    next();
+  });
+}, async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No audio file provided.' });
   }
@@ -59,15 +70,22 @@ router.post('/split', upload.single('audio'), async (req, res) => {
   const segmentDurationSeconds = Math.round(durationMinutes * 60);
   const inputPath = req.file.path;
 
+  // Derive a safe base name from the original file name (e.g. "My Audio" → "My_Audio")
+  const rawName = path.basename(req.file.originalname, path.extname(req.file.originalname));
+  const safeName = rawName
+    .replace(/[^a-zA-Z0-9_\-]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^_+|_+$/g, '') || 'audio';
+
   // Use a per-job subdirectory so segments from different jobs don't mix
   const jobId = path.basename(inputPath, path.extname(inputPath));
   const outputDir = path.join(UPLOAD_DIR, jobId);
   fs.mkdirSync(outputDir, { recursive: true });
 
   try {
-    console.log(`[split] job=${jobId} file=${req.file.originalname} segmentDuration=${durationMinutes}min`);
+    console.log(`[split] job=${jobId} file=${req.file.originalname} baseName=${safeName} segmentDuration=${durationMinutes}min`);
 
-    const segmentPaths = await splitAudio(inputPath, segmentDurationSeconds, outputDir);
+    const segmentPaths = await splitAudio(inputPath, segmentDurationSeconds, outputDir, safeName);
 
     // Build downloadable URLs
     const baseUrl = `${req.protocol}://${req.get('host')}`;

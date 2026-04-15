@@ -40,9 +40,10 @@ async function splitAudio(inputPath, segmentDurationSeconds, outputDir, baseName
   }
 
   // Build output paths up front so we can return them
+  // Naming convention: baseName_parte1.ext, baseName_parte2.ext, …
   const outputPaths = [];
   for (let i = 0; i < segmentCount; i++) {
-    outputPaths.push(path.join(outputDir, `${baseName}_${i + 1}${ext}`));
+    outputPaths.push(path.join(outputDir, `${baseName}_parte${i + 1}${ext}`));
   }
 
   // Run the segmentation
@@ -54,12 +55,12 @@ async function splitAudio(inputPath, segmentDurationSeconds, outputDir, baseName
         '-c', 'copy',           // no re-encoding
         '-reset_timestamps', '1',
       ])
-      .output(path.join(outputDir, `${baseName}_%d${ext}`))
+      // ffmpeg outputs 0-based: baseName_parte0.ext, baseName_parte1.ext, …
+      .output(path.join(outputDir, `${baseName}_parte%d${ext}`))
       .on('start', (cmd) => console.log('[ffmpeg] command:', cmd))
       .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
       .on('end', () => {
-        // fluent-ffmpeg names segments with 0-based index
-        // rename to 1-based for UX
+        // Rename 0-based → 1-based
         renameSegments(outputDir, baseName, ext, segmentCount)
           .then(resolve)
           .catch(reject);
@@ -76,9 +77,10 @@ async function splitAudio(inputPath, segmentDurationSeconds, outputDir, baseName
  * Rename 0-indexed ffmpeg output (parte_0.mp3, parte_1.mp3 …) to 1-indexed.
  */
 async function renameSegments(outputDir, baseName, ext, count) {
+  // Iterate in reverse to avoid overwriting e.g. parte1 before it's been renamed
   for (let i = count - 1; i >= 0; i--) {
-    const from = path.join(outputDir, `${baseName}_${i}${ext}`);
-    const to = path.join(outputDir, `${baseName}_${i + 1}${ext}`);
+    const from = path.join(outputDir, `${baseName}_parte${i}${ext}`);
+    const to   = path.join(outputDir, `${baseName}_parte${i + 1}${ext}`);
     if (fs.existsSync(from)) {
       fs.renameSync(from, to);
     }
