@@ -8,6 +8,19 @@ const fs = require('fs');
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 ffmpeg.setFfprobePath(ffprobeInstaller.path);
 
+// ---------------------------------------------------------------------------
+// Codec map — used when re-encoding is required (e.g. silence removal)
+// ---------------------------------------------------------------------------
+function getReencodeArgs(ext) {
+  switch (ext) {
+    case '.mp3': return ['-c:a', 'libmp3lame', '-q:a', '2'];
+    case '.m4a': return ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'];
+    case '.ogg': return ['-c:a', 'libvorbis', '-q:a', '6'];
+    case '.wav': return ['-c:a', 'pcm_s16le'];
+    default:     return ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'];
+  }
+}
+
 /**
  * Get the duration of an audio file in seconds.
  * @param {string} filePath - Absolute path to the audio file
@@ -25,28 +38,72 @@ function getAudioDuration(filePath) {
 }
 
 /**
+ * Remove leading silence from an audio file.
+ * Requires re-encoding (filters are incompatible with -c copy).
+ *
+ * @param {string} inputPath  - Source file
+ * @param {string} outputPath - Destination file (same extension recommended)
+ */
+function trimLeadingSilence(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const ext = path.extname(inputPath).toLowerCase();
+    ffmpeg(inputPath)
+      // start_periods=1  → only the very beginning
+      // start_duration=0.5 → ignore pauses shorter than 0.5 s
+      // start_threshold=-50dB → anything below this level is "silence"
+      .audioFilters('silenceremove=start_periods=1:start_duration=0.5:start_threshold=-50dB')
+      .outputOptions(getReencodeArgs(ext))
+      .output(outputPath)
+      .on('start', (cmd) => console.log('[ffmpeg silence-trim] command:', cmd))
+      .on('error', (err) => reject(new Error(`Silence trim failed: ${err.message}`)))
+      .on('end', resolve)
+      .run();
+  });
+}
+
+/**
  * Split an audio file into segments of the given duration.
  * Uses -c copy to avoid re-encoding (fast and lossless).
+ * If trimSilence is true, leading silence is removed first (requires re-encode).
  *
- * @param {string} inputPath - Absolute path to the source audio file
- * @param {number} segmentDurationSeconds - Duration of each segment in seconds
- * @param {string} outputDir - Directory where segments will be written
- * @param {string} baseName - Base name without extension (e.g. "parte")
+ * @param {string}  inputPath              - Absolute path to the source audio file
+ * @param {number}  segmentDurationSeconds - Duration of each segment in seconds
+ * @param {string}  outputDir              - Directory where segments will be written
+ * @param {string}  baseName               - Base name without extension
+ * @param {boolean} trimSilence            - Remove leading silence before splitting
  * @returns {Promise<string[]>} Array of output file paths
  */
-async function splitAudio(inputPath, segmentDurationSeconds, outputDir, baseName = 'parte') {
-  const totalDuration = await getAudioDuration(inputPath);
+async function splitAudio(inputPath, segmentDurationSeconds, outputDir, baseName = 'audio', trimSilence = false) {
   const ext = path.extname(inputPath).toLowerCase(); // e.g. ".mp3"
+
+  // --- Optional silence trimming -------------------------------------------
+  let fileToSplit = inputPath;
+  let tempTrimmed = null;
+
+  if (trimSilence) {
+    tempTrimmed = path.join(
+      path.dirname(inputPath),
+      path.basename(inputPath, ext) + '_trimmed' + ext,
+    );
+    console.log('[silence-trim] Removing leading silence…');
+    await trimLeadingSilence(inputPath, tempTrimmed);
+    fileToSplit = tempTrimmed;
+    console.log('[silence-trim] Done.');
+  }
+  // -------------------------------------------------------------------------
+
+  try {
+  const totalDuration = await getAudioDuration(fileToSplit);
   const segmentCount = Math.ceil(totalDuration / segmentDurationSeconds);
 
   if (segmentCount < 2) {
     throw new Error(
-      `The segment duration (${segmentDurationSeconds}s) is longer than or equal to the file duration (${Math.round(totalDuration)}s). Choose a shorter segment duration.`
+      `La duración del segmento (${segmentDurationSeconds}s) es mayor o igual a la duración del archivo (${Math.round(totalDuration)}s). Elige una duración más corta.`
     );
   }
 
   // Build output paths up front so we can return them
-  // Naming convention: baseName_parte1.ext, baseName_parte2.ext, …
+  // Naming: baseName_parte1.ext, baseName_parte2.ext, …
   const outputPaths = [];
   for (let i = 0; i < segmentCount; i++) {
     outputPaths.push(path.join(outputDir, `${baseName}_parte${i + 1}${ext}`));
@@ -54,16 +111,16 @@ async function splitAudio(inputPath, segmentDurationSeconds, outputDir, baseName
 
   // Run the segmentation
   await new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
+    ffmpeg(fileToSplit)
       .outputOptions([
         '-f', 'segment',
         '-segment_time', String(segmentDurationSeconds),
-        '-c', 'copy',           // no re-encoding
+        '-c', 'copy',           // no re-encoding for the split step
         '-reset_timestamps', '1',
       ])
       // ffmpeg outputs 0-based: baseName_parte0.ext, baseName_parte1.ext, …
       .output(path.join(outputDir, `${baseName}_parte%d${ext}`))
-      .on('start', (cmd) => console.log('[ffmpeg] command:', cmd))
+      .on('start', (cmd) => console.log('[ffmpeg split] command:', cmd))
       .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)))
       .on('end', () => {
         // Rename 0-based → 1-based
@@ -77,6 +134,13 @@ async function splitAudio(inputPath, segmentDurationSeconds, outputDir, baseName
   // Filter to only files that were actually created (last segment may be partial)
   const existing = outputPaths.filter((p) => fs.existsSync(p));
   return existing;
+
+  } finally {
+    // Always clean up the temporary trimmed file
+    if (tempTrimmed && fs.existsSync(tempTrimmed)) {
+      try { fs.unlinkSync(tempTrimmed); } catch (_) {}
+    }
+  }
 }
 
 /**
@@ -127,4 +191,4 @@ function scheduleCleanup(dir, delayMs = 60 * 60 * 1000) {
   }, delayMs);
 }
 
-module.exports = { splitAudio, getAudioDuration, cleanupFiles, scheduleCleanup };
+module.exports = { splitAudio, trimLeadingSilence, getAudioDuration, cleanupFiles, scheduleCleanup };

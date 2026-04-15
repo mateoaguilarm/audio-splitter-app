@@ -82,10 +82,16 @@ router.post('/split', (req, res, next) => {
   const outputDir = path.join(UPLOAD_DIR, jobId);
   fs.mkdirSync(outputDir, { recursive: true });
 
-  try {
-    console.log(`[split] job=${jobId} file=${req.file.originalname} baseName=${safeName} segmentDuration=${durationMinutes}min`);
+  // trimSilence comes as the string "true" from FormData
+  const trimSilence = req.body.trimSilence === 'true';
 
-    const segmentPaths = await splitAudio(inputPath, segmentDurationSeconds, outputDir, safeName);
+  try {
+    console.log(
+      `[split] job=${jobId} file=${req.file.originalname} baseName=${safeName} ` +
+      `segmentDuration=${durationMinutes}min trimSilence=${trimSilence}`
+    );
+
+    const segmentPaths = await splitAudio(inputPath, segmentDurationSeconds, outputDir, safeName, trimSilence);
 
     // Return relative paths — the frontend prepends its own origin so all
     // requests flow through the Netlify proxy instead of hitting Render directly.
