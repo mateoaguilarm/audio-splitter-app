@@ -1,6 +1,12 @@
 const ffmpeg = require('fluent-ffmpeg');
+const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
 const path = require('path');
 const fs = require('fs');
+
+// Use bundled binaries so the server works without a system FFmpeg install
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+ffmpeg.setFfprobePath(ffprobeInstaller.path);
 
 /**
  * Get the duration of an audio file in seconds.

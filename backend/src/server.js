@@ -11,7 +11,26 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 // Middleware
 // ---------------------------------------------------------------------------
 app.use(cors({
-  origin: [FRONTEND_URL, 'http://localhost:5173', 'http://localhost:4173'],
+  origin: (origin, callback) => {
+    // Allow requests with no origin (curl, Postman, server-to-server)
+    if (!origin) return callback(null, true);
+
+    const allowed = [
+      FRONTEND_URL,
+      'http://localhost:5173',
+      'http://localhost:4173',
+    ].filter(Boolean);
+
+    // Accept any *.netlify.app deploy preview or production URL
+    const isNetlify = /\.netlify\.app$/.test(origin);
+
+    if (allowed.includes(origin) || isNetlify) {
+      callback(null, true);
+    } else {
+      console.warn(`[CORS] blocked origin: ${origin}`);
+      callback(new Error(`CORS policy does not allow origin: ${origin}`));
+    }
+  },
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type'],
 }));

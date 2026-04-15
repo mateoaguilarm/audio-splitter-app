@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: audio-splitter-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: FRONTEND_URL
+        sync: false          # set this manually in Render dashboard → your Netlify URL
+      - key: MAX_FILE_SIZE_MB
+        value: 500
+      - key: UPLOAD_DIR
+        value: /tmp/uploads
+      - key: CLEANUP_INTERVAL_MINUTES
+        value: 60
