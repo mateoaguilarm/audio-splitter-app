@@ -87,12 +87,12 @@ router.post('/split', (req, res, next) => {
 
     const segmentPaths = await splitAudio(inputPath, segmentDurationSeconds, outputDir, safeName);
 
-    // Build downloadable URLs
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    // Return relative paths — the frontend prepends its own origin so all
+    // requests flow through the Netlify proxy instead of hitting Render directly.
     const segments = segmentPaths.map((p, idx) => ({
       index: idx + 1,
       filename: path.basename(p),
-      downloadUrl: `${baseUrl}/api/download/${jobId}/${path.basename(p)}`,
+      downloadPath: `/api/download/${jobId}/${path.basename(p)}`,
       size: fs.statSync(p).size,
     }));
 

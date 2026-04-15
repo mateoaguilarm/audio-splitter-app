@@ -1,10 +1,19 @@
 import { formatBytes } from './Upload';
 
 /**
+ * Build an absolute download URL from the relative path the backend returns.
+ * This ensures all requests go through the Netlify proxy (same origin)
+ * instead of hitting the Render backend directly.
+ */
+function toDownloadUrl(seg) {
+  return window.location.origin + seg.downloadPath;
+}
+
+/**
  * Results — downloadable segment list.
  *
  * Props:
- *   segments  - Array of { index, filename, downloadUrl, size }
+ *   segments  - Array of { index, filename, downloadPath, size }
  *   onReset() - Clear results and start over
  */
 export default function Results({ segments, onReset }) {
@@ -15,7 +24,7 @@ export default function Results({ segments, onReset }) {
       // Stagger downloads to avoid browser blocking
       setTimeout(() => {
         const a = document.createElement('a');
-        a.href = seg.downloadUrl;
+        a.href = toDownloadUrl(seg);
         a.download = seg.filename;
         a.click();
       }, i * 300);
@@ -60,7 +69,7 @@ export default function Results({ segments, onReset }) {
             </div>
 
             <a
-              href={seg.downloadUrl}
+              href={toDownloadUrl(seg)}
               download={seg.filename}
               className="flex items-center gap-1.5 text-sm text-brand hover:text-brand-dark font-medium transition-colors"
             >
