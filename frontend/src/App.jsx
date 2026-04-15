@@ -6,7 +6,12 @@ import Preview from './components/Preview';
 import Progress from './components/Progress';
 import Results from './components/Results';
 
-const API_URL = import.meta.env.VITE_API_URL || '';
+// File uploads go directly to the Render backend, bypassing the Netlify proxy.
+// Netlify's reverse proxy rejects multipart bodies over ~6 MB, so large audio
+// files would fail with 400 if routed through netlify.toml redirects.
+// CORS on the backend already accepts *.netlify.app so this works cross-origin.
+// Override with VITE_API_URL env var if the backend URL ever changes.
+const UPLOAD_URL = import.meta.env.VITE_API_URL || 'https://audio-splitter-app.onrender.com';
 
 export default function App() {
   const [file, setFile] = useState(null);
@@ -36,7 +41,7 @@ export default function App() {
     try {
       // Do NOT set Content-Type manually — Axios must auto-set it with the
       // multipart boundary; overriding it breaks multer's body parsing.
-      const { data } = await axios.post(`${API_URL}/api/split`, formData, {
+      const { data } = await axios.post(`${UPLOAD_URL}/api/split`, formData, {
         timeout: 10 * 60 * 1000, // 10 min
       });
       setSegments(data.segments);
